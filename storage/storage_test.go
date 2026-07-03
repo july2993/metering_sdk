@@ -73,6 +73,22 @@ func TestS3ProviderConfiguration(t *testing.T) {
 	t.Logf("S3 provider configuration test passed")
 }
 
+func TestCOSProviderFactory(t *testing.T) {
+	providerConfig := &storage.ProviderConfig{
+		Type:   storage.ProviderTypeCOS,
+		Bucket: "metering-123456",
+		Region: "ap-beijing",
+		COS: &storage.COSConfig{
+			AccessKey:       "sid",
+			SecretAccessKey: "skey",
+		},
+	}
+
+	provider, err := storage.NewObjectStorageProvider(providerConfig)
+	assert.NoError(t, err, "Failed to create COS provider")
+	assert.NotNil(t, provider, "COS provider should not be nil")
+}
+
 func TestMeteringWriterWithLocalFS(t *testing.T) {
 	// Create temporary directory
 	tempDir := filepath.Join(os.TempDir(), "tidb-metering-test", "writer")

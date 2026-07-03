@@ -12,6 +12,8 @@ const (
 	ProviderTypeAzure ProviderType = "azure"
 	// ProviderTypeOSS Alibaba Cloud OSS storage provider
 	ProviderTypeOSS ProviderType = "oss"
+	// ProviderTypeCOS TencentCloud COS storage provider
+	ProviderTypeCOS ProviderType = "cos"
 	// ProviderTypeLocalFS local filesystem storage provider
 	ProviderTypeLocalFS ProviderType = "localfs"
 )
@@ -29,6 +31,7 @@ type ProviderConfig struct {
 	GCS     *GCSConfig     `json:"gcs,omitempty"`     // Google Cloud Storage specific configuration
 	Azure   *AzureConfig   `json:"azure,omitempty"`   // Azure Blob Storage specific configuration
 	OSS     *OSSConfig     `json:"oss,omitempty"`     // Alibaba Cloud OSS specific configuration
+	COS     *COSConfig     `json:"cos,omitempty"`     // TencentCloud COS specific configuration
 	LocalFS *LocalFSConfig `json:"localfs,omitempty"` // local filesystem specific configuration
 }
 
@@ -64,6 +67,16 @@ type OSSConfig struct {
 	SessionToken    string `json:"session_token,omitempty"`
 	// Custom OSS Config object for oss-sdk-go-v2
 	CustomConfig interface{} `json:"-"` // not serialized, used to pass oss config
+}
+
+// COSConfig TencentCloud COS specific configuration
+type COSConfig struct {
+	AssumeRoleARN   string `json:"assume_role_arn,omitempty"`
+	AccessKey       string `json:"access_key,omitempty"`
+	SecretAccessKey string `json:"secret_access_key,omitempty"`
+	SessionToken    string `json:"session_token,omitempty"`
+	// Custom COS client object for tests and advanced callers.
+	CustomClient interface{} `json:"-"` // not serialized, used to pass *cos.Client
 }
 
 // LocalFSConfig local filesystem specific configuration
