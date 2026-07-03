@@ -25,9 +25,25 @@ const (
 )
 
 var (
-	newTencentCloudDefaultProviderChain = common.DefaultProviderChain
-	assumeTencentCloudRole              = assumeTencentCloudRoleWithSTS
+	assumeTencentCloudRole = assumeTencentCloudRoleWithSTS
 )
+
+func newTencentCloudDefaultProviderChain() common.Provider {
+	providers := []common.Provider{
+		common.DefaultEnvProvider(),
+	}
+
+	oidc, err := common.DefaultTkeOIDCRoleArnProvider()
+	if err == nil {
+		providers = append(providers, oidc)
+	}
+	providers = append(providers,
+		common.DefaultProfileProvider(),
+		common.DefaultCvmRoleProvider(),
+	)
+
+	return common.NewProviderChain(providers)
+}
 
 // COSProvider TencentCloud COS storage provider implementation.
 type COSProvider struct {
@@ -269,16 +285,6 @@ type tencentCloudAssumeRoleResult struct {
 }
 
 func assumeTencentCloudRoleWithSTS(ctx context.Context, baseCred common.CredentialIface, roleARN, roleSessionName string, duration time.Duration) (*tencentCloudAssumeRoleResult, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if baseCred == nil {
-		return nil, fmt.Errorf("base TencentCloud credential is nil")
-	}
-	if roleARN == "" {
-		return nil, fmt.Errorf("cos.assumeRoleArn not set")
-	}
-
 	cpf := profile.NewClientProfile()
 	cpf.HttpProfile.Endpoint = "sts.tencentcloudapi.com"
 	cpf.HttpProfile.ReqMethod = "POST"
