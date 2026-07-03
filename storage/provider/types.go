@@ -75,8 +75,6 @@ type COSConfig struct {
 	AccessKey       string `json:"access_key,omitempty"`
 	SecretAccessKey string `json:"secret_access_key,omitempty"`
 	SessionToken    string `json:"session_token,omitempty"`
-	// Custom COS client object for tests and advanced callers.
-	CustomClient interface{} `json:"-"` // not serialized, used to pass *cos.Client
 }
 
 // LocalFSConfig local filesystem specific configuration

@@ -44,17 +44,6 @@ func NewCOSProvider(providerConfig *ProviderConfig) (*COSProvider, error) {
 		return nil, fmt.Errorf("bucket name is required for COS provider")
 	}
 
-	if providerConfig.COS != nil && providerConfig.COS.CustomClient != nil {
-		cosClient, ok := providerConfig.COS.CustomClient.(*cos.Client)
-		if !ok {
-			return nil, fmt.Errorf("invalid COS client type, expected *cos.Client")
-		}
-		return &COSProvider{
-			client: cosClient,
-			prefix: providerConfig.Prefix,
-		}, nil
-	}
-
 	bucketURL, err := buildCOSBucketURL(providerConfig.Bucket, providerConfig.Region, providerConfig.Endpoint)
 	if err != nil {
 		return nil, err
