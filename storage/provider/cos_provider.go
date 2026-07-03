@@ -79,6 +79,9 @@ func buildCOSBucketURL(bucket, region, endpoint string) (*url.URL, error) {
 	if u.Host == "" {
 		return nil, fmt.Errorf("invalid COS endpoint: host is empty")
 	}
+	if !strings.HasPrefix(u.Host, bucket+".") {
+		u.Host = bucket + "." + u.Host
+	}
 	return u, nil
 }
 

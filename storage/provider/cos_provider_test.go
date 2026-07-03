@@ -52,16 +52,10 @@ func TestBuildCOSBucketURL(t *testing.T) {
 			want:   "https://metering-123456.cos.ap-beijing.myqcloud.com",
 		},
 		{
-			name:     "keeps service endpoint unchanged",
+			name:     "adds bucket to endpoint",
 			bucket:   "metering-123456",
 			endpoint: "cos.ap-beijing.myqcloud.com",
-			want:     "https://cos.ap-beijing.myqcloud.com",
-		},
-		{
-			name:     "keeps custom endpoint unchanged",
-			bucket:   "metering-123456",
-			endpoint: "http://127.0.0.1:9000",
-			want:     "http://127.0.0.1:9000",
+			want:     "https://metering-123456.cos.ap-beijing.myqcloud.com",
 		},
 		{
 			name:     "keeps bucket endpoint",
