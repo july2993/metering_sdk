@@ -17,6 +17,26 @@ import (
 	"github.com/tencentyun/cos-go-sdk-v5"
 )
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type recordingCOSCredentialsProvider struct {
+	ctx   context.Context
+	calls int
+}
+
+func (p *recordingCOSCredentialsProvider) GetCredential(ctx context.Context) (common.CredentialIface, error) {
+	p.ctx = ctx
+	p.calls++
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return common.NewTokenCredential("sid", "skey", "token"), nil
+}
+
 func TestBuildCOSBucketURL(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -32,10 +52,16 @@ func TestBuildCOSBucketURL(t *testing.T) {
 			want:   "https://metering-123456.cos.ap-beijing.myqcloud.com",
 		},
 		{
-			name:     "adds bucket to endpoint",
+			name:     "keeps service endpoint unchanged",
 			bucket:   "metering-123456",
 			endpoint: "cos.ap-beijing.myqcloud.com",
-			want:     "https://metering-123456.cos.ap-beijing.myqcloud.com",
+			want:     "https://cos.ap-beijing.myqcloud.com",
+		},
+		{
+			name:     "keeps custom endpoint unchanged",
+			bucket:   "metering-123456",
+			endpoint: "http://127.0.0.1:9000",
+			want:     "http://127.0.0.1:9000",
 		},
 		{
 			name:     "keeps bucket endpoint",
@@ -117,6 +143,28 @@ func TestTencentCloudCOSCredentialsProviderAssumeRole(t *testing.T) {
 	require.Equal(t, 1, assumeCalls)
 	require.Equal(t, "base-id", gotBase.GetSecretId())
 	require.Equal(t, "qcs::cam::uin/123456:roleName/metering", gotRoleARN)
+}
+
+func TestTencentCloudCOSAuthorizationTransportUsesRequestContext(t *testing.T) {
+	type contextKey struct{}
+	provider := &recordingCOSCredentialsProvider{}
+	transport := &tencentCloudCOSAuthorizationTransport{
+		credentialProvider: provider,
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			t.Fatal("underlying transport should not be called when request context is canceled")
+			return nil, nil
+		}),
+	}
+
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), contextKey{}, "request-context"))
+	cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://metering-123456.cos.ap-beijing.myqcloud.com/object", nil)
+	require.NoError(t, err)
+
+	_, err = transport.RoundTrip(req)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, 1, provider.calls)
+	require.Equal(t, "request-context", provider.ctx.Value(contextKey{}))
 }
 
 func TestCOSProviderObjectOperationsUsePrefix(t *testing.T) {

@@ -79,9 +79,6 @@ func buildCOSBucketURL(bucket, region, endpoint string) (*url.URL, error) {
 	if u.Host == "" {
 		return nil, fmt.Errorf("invalid COS endpoint: host is empty")
 	}
-	if !strings.HasPrefix(u.Host, bucket+".") {
-		u.Host = bucket + "." + u.Host
-	}
 	return u, nil
 }
 
@@ -285,6 +282,7 @@ func assumeTencentCloudRoleWithSTS(ctx context.Context, baseCred common.Credenti
 
 	client := common.NewCommonClient(baseCred, regions.Guangzhou, cpf)
 	request := tchttp.NewCommonRequest("sts", "2018-08-13", "AssumeRole")
+	request.SetContext(ctx)
 	if err := request.SetActionParameters(map[string]interface{}{
 		"RoleArn":         roleARN,
 		"RoleSessionName": roleSessionName,
@@ -331,7 +329,11 @@ type tencentCloudCOSAuthorizationTransport struct {
 }
 
 func (t *tencentCloudCOSAuthorizationTransport) GetCredential() (string, string, string, error) {
-	cred, err := t.credentialProvider.GetCredential(context.Background())
+	return t.getCredential(context.Background())
+}
+
+func (t *tencentCloudCOSAuthorizationTransport) getCredential(ctx context.Context) (string, string, string, error) {
+	cred, err := t.credentialProvider.GetCredential(ctx)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -339,7 +341,7 @@ func (t *tencentCloudCOSAuthorizationTransport) GetCredential() (string, string,
 }
 
 func (t *tencentCloudCOSAuthorizationTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	secretID, secretKey, token, err := t.GetCredential()
+	secretID, secretKey, token, err := t.getCredential(req.Context())
 	if err != nil {
 		return nil, err
 	}
