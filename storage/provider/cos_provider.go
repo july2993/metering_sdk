@@ -196,7 +196,9 @@ func (p *tencentCloudStaticCredentialsProvider) GetCredential(ctx context.Contex
 }
 
 type tencentCloudDefaultCredentialsProvider struct {
-	provider common.Provider
+	mu         sync.Mutex
+	provider   common.Provider
+	credential common.CredentialIface
 }
 
 func newTencentCloudCOSCredentialsProvider(cfg *COSConfig) tencentCloudCOSCredentialsProvider {
@@ -226,6 +228,17 @@ func (p *tencentCloudDefaultCredentialsProvider) GetCredential(ctx context.Conte
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if p.credential != nil {
+		return p.credential, nil
+	}
+
 	cred, err := p.provider.GetCredential()
 	if err != nil {
 		return nil, err
@@ -233,7 +246,12 @@ func (p *tencentCloudDefaultCredentialsProvider) GetCredential(ctx context.Conte
 	if cred == nil {
 		return nil, fmt.Errorf("credential provider returned nil credentials")
 	}
-	return cred, nil
+
+	// Dynamic credentials returned by the TencentCloud SDK refresh themselves
+	// before expiration. Cache the credential object so each COS request does
+	// not resolve the provider chain and call STS again.
+	p.credential = cred
+	return p.credential, nil
 }
 
 type tencentCloudAssumeRoleCredentialsProvider struct {
@@ -346,7 +364,8 @@ func (t *tencentCloudCOSAuthorizationTransport) getCredential(ctx context.Contex
 	if err != nil {
 		return "", "", "", err
 	}
-	return cred.GetSecretId(), cred.GetSecretKey(), cred.GetToken(), nil
+	secretID, secretKey, token := cred.GetCredential()
+	return secretID, secretKey, token, nil
 }
 
 func (t *tencentCloudCOSAuthorizationTransport) RoundTrip(req *http.Request) (*http.Response, error) {

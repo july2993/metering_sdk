@@ -3,12 +3,14 @@ package provider
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,6 +37,70 @@ func (p *recordingCOSCredentialsProvider) GetCredential(ctx context.Context) (co
 		return nil, err
 	}
 	return common.NewTokenCredential("sid", "skey", "token"), nil
+}
+
+type recordingTencentCloudProvider struct {
+	mu         sync.Mutex
+	credential common.CredentialIface
+	errs       []error
+	calls      int
+}
+
+func (p *recordingTencentCloudProvider) GetCredential() (common.CredentialIface, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.calls++
+	if p.calls <= len(p.errs) && p.errs[p.calls-1] != nil {
+		return nil, p.errs[p.calls-1]
+	}
+	return p.credential, nil
+}
+
+func (p *recordingTencentCloudProvider) callCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
+type trackingTencentCloudCredential struct {
+	mu              sync.Mutex
+	individualCalls int
+	tupleCalls      int
+}
+
+func (c *trackingTencentCloudCredential) GetSecretId() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.individualCalls++
+	return "sid"
+}
+
+func (c *trackingTencentCloudCredential) GetSecretKey() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.individualCalls++
+	return "skey"
+}
+
+func (c *trackingTencentCloudCredential) GetToken() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.individualCalls++
+	return "token"
+}
+
+func (c *trackingTencentCloudCredential) GetCredential() (string, string, string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.tupleCalls++
+	return "sid", "skey", "token"
+}
+
+func (c *trackingTencentCloudCredential) callCounts() (int, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.individualCalls, c.tupleCalls
 }
 
 func TestBuildCOSBucketURL(t *testing.T) {
@@ -91,6 +157,87 @@ func TestTencentCloudCOSCredentialsProviderStatic(t *testing.T) {
 	require.Equal(t, "sid", credential.GetSecretId())
 	require.Equal(t, "skey", credential.GetSecretKey())
 	require.Equal(t, "token", credential.GetToken())
+}
+
+func TestTencentCloudDefaultCredentialsProviderCachesCredential(t *testing.T) {
+	credential := common.NewTokenCredential("sid", "skey", "token")
+	underlying := &recordingTencentCloudProvider{credential: credential}
+	provider := &tencentCloudDefaultCredentialsProvider{provider: underlying}
+
+	first, err := provider.GetCredential(context.Background())
+	require.NoError(t, err)
+	second, err := provider.GetCredential(context.Background())
+	require.NoError(t, err)
+
+	require.Same(t, credential, first)
+	require.Same(t, first, second)
+	require.Equal(t, 1, underlying.callCount())
+}
+
+func TestTencentCloudDefaultCredentialsProviderRetriesAfterError(t *testing.T) {
+	temporaryErr := errors.New("temporary STS error")
+	credential := common.NewTokenCredential("sid", "skey", "token")
+	underlying := &recordingTencentCloudProvider{
+		credential: credential,
+		errs:       []error{temporaryErr},
+	}
+	provider := &tencentCloudDefaultCredentialsProvider{provider: underlying}
+
+	_, err := provider.GetCredential(context.Background())
+	require.ErrorIs(t, err, temporaryErr)
+
+	got, err := provider.GetCredential(context.Background())
+	require.NoError(t, err)
+	require.Same(t, credential, got)
+	require.Equal(t, 2, underlying.callCount())
+}
+
+func TestTencentCloudDefaultCredentialsProviderConcurrentInitialization(t *testing.T) {
+	credential := common.NewTokenCredential("sid", "skey", "token")
+	underlying := &recordingTencentCloudProvider{credential: credential}
+	provider := &tencentCloudDefaultCredentialsProvider{provider: underlying}
+
+	const goroutines = 100
+	start := make(chan struct{})
+	errs := make(chan error, goroutines)
+	var wg sync.WaitGroup
+	for range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			got, err := provider.GetCredential(context.Background())
+			if err == nil && got != credential {
+				err = fmt.Errorf("unexpected credential: %T", got)
+			}
+			errs <- err
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	require.Equal(t, 1, underlying.callCount())
+}
+
+func TestTencentCloudCOSAuthorizationTransportReadsCredentialAtomically(t *testing.T) {
+	credential := &trackingTencentCloudCredential{}
+	transport := &tencentCloudCOSAuthorizationTransport{
+		credentialProvider: &tencentCloudStaticCredentialsProvider{credential: credential},
+	}
+
+	secretID, secretKey, token, err := transport.getCredential(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "sid", secretID)
+	require.Equal(t, "skey", secretKey)
+	require.Equal(t, "token", token)
+
+	individualCalls, tupleCalls := credential.callCounts()
+	require.Zero(t, individualCalls)
+	require.Equal(t, 1, tupleCalls)
 }
 
 func TestTencentCloudCOSCredentialsProviderAssumeRole(t *testing.T) {
