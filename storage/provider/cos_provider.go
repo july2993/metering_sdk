@@ -174,10 +174,7 @@ func (c *COSProvider) List(ctx context.Context, prefix string) ([]string, error)
 
 func isCOSNotFound(err error) bool {
 	var cosErr *cos.ErrorResponse
-	if errors.As(err, &cosErr) && cosErr.Response != nil && cosErr.Response.StatusCode == http.StatusNotFound {
-		return true
-	}
-	return strings.Contains(err.Error(), "NoSuchKey") || strings.Contains(err.Error(), "NoSuchResource") || strings.Contains(err.Error(), "404")
+	return errors.As(err, &cosErr) && cosErr.Response != nil && cosErr.Response.StatusCode == http.StatusNotFound
 }
 
 type tencentCloudCOSCredentialsProvider interface {
@@ -279,20 +276,32 @@ func (p *tencentCloudAssumeRoleCredentialsProvider) GetCredential(ctx context.Co
 
 	baseCred, err := p.baseProvider.GetCredential(ctx)
 	if err != nil {
-		return nil, err
+		return p.credentialAfterRefreshError(ctx, err)
 	}
 
 	result, err := assumeTencentCloudRole(ctx, baseCred, p.roleARN, defaultCOSAssumeRoleSessionName, p.duration)
 	if err != nil {
-		return nil, err
+		return p.credentialAfterRefreshError(ctx, err)
 	}
 
 	p.credential = common.NewTokenCredential(result.tmpSecretID, result.tmpSecretKey, result.token)
 	p.expiresAt = result.expiresAt
-	if p.expiresAt.IsZero() {
+	if p.expiresAt.IsZero() || p.expiresAt.Unix() <= 0 {
 		p.expiresAt = time.Now().Add(p.duration)
 	}
 	return p.credential, nil
+}
+
+// credentialAfterRefreshError returns an existing credential while it is
+// still valid. Once it has expired, the refresh error must be surfaced.
+func (p *tencentCloudAssumeRoleCredentialsProvider) credentialAfterRefreshError(ctx context.Context, refreshErr error) (common.CredentialIface, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if p.credential != nil && time.Now().Before(p.expiresAt) {
+		return p.credential, nil
+	}
+	return nil, refreshErr
 }
 
 type tencentCloudAssumeRoleResult struct {

@@ -145,6 +145,33 @@ func TestBuildCOSBucketURLRequiresRegionWithoutEndpoint(t *testing.T) {
 	require.ErrorContains(t, err, "region is required for COS provider")
 }
 
+func TestIsCOSNotFound(t *testing.T) {
+	newCOSError := func(statusCode int, rawURL, code string) error {
+		req, err := http.NewRequest(http.MethodHead, rawURL, nil)
+		require.NoError(t, err)
+		return &cos.ErrorResponse{
+			Response: &http.Response{
+				StatusCode: statusCode,
+				Header:     make(http.Header),
+				Request:    req,
+			},
+			Code: code,
+		}
+	}
+
+	require.True(t, isCOSNotFound(newCOSError(
+		http.StatusNotFound,
+		"https://metering-123456.cos.ap-beijing.myqcloud.com/missing",
+		"NoSuchKey",
+	)))
+	require.False(t, isCOSNotFound(newCOSError(
+		http.StatusForbidden,
+		"https://metering-404.cos.ap-beijing.myqcloud.com/object",
+		"AccessDenied",
+	)))
+	require.False(t, isCOSNotFound(errors.New("upstream returned 404")))
+}
+
 func TestTencentCloudCOSCredentialsProviderStatic(t *testing.T) {
 	credentialProvider := newTencentCloudCOSCredentialsProvider(&COSConfig{
 		AccessKey:       "sid",
@@ -284,6 +311,99 @@ func TestTencentCloudCOSCredentialsProviderAssumeRole(t *testing.T) {
 	require.Equal(t, 1, assumeCalls)
 	require.Equal(t, "base-id", gotBase.GetSecretId())
 	require.Equal(t, "qcs::cam::uin/123456:roleName/metering", gotRoleARN)
+}
+
+func TestTencentCloudAssumeRoleCredentialsProviderUsesValidCredentialWhenRefreshFails(t *testing.T) {
+	origAssumeRole := assumeTencentCloudRole
+	t.Cleanup(func() {
+		assumeTencentCloudRole = origAssumeRole
+	})
+
+	refreshErr := errors.New("temporary STS error")
+	assumeCalls := 0
+	assumeTencentCloudRole = func(context.Context, common.CredentialIface, string, string, time.Duration) (*tencentCloudAssumeRoleResult, error) {
+		assumeCalls++
+		if assumeCalls > 1 {
+			return nil, refreshErr
+		}
+		return &tencentCloudAssumeRoleResult{
+			tmpSecretID:  "tmp-id",
+			tmpSecretKey: "tmp-key",
+			token:        "tmp-token",
+			// Within the refresh window, but still valid.
+			expiresAt: time.Now().Add(5 * time.Minute),
+		}, nil
+	}
+
+	provider := &tencentCloudAssumeRoleCredentialsProvider{
+		baseProvider: &tencentCloudStaticCredentialsProvider{
+			credential: common.NewCredential("base-id", "base-key"),
+		},
+		roleARN:  "qcs::cam::uin/123456:roleName/metering",
+		duration: cosAssumeRoleDuration,
+	}
+
+	first, err := provider.GetCredential(context.Background())
+	require.NoError(t, err)
+	second, err := provider.GetCredential(context.Background())
+	require.NoError(t, err)
+	require.Same(t, first, second)
+	require.Equal(t, 2, assumeCalls)
+}
+
+func TestTencentCloudAssumeRoleCredentialsProviderReturnsRefreshErrorAfterExpiration(t *testing.T) {
+	origAssumeRole := assumeTencentCloudRole
+	t.Cleanup(func() {
+		assumeTencentCloudRole = origAssumeRole
+	})
+
+	refreshErr := errors.New("temporary STS error")
+	assumeTencentCloudRole = func(context.Context, common.CredentialIface, string, string, time.Duration) (*tencentCloudAssumeRoleResult, error) {
+		return nil, refreshErr
+	}
+
+	provider := &tencentCloudAssumeRoleCredentialsProvider{
+		baseProvider: &tencentCloudStaticCredentialsProvider{
+			credential: common.NewCredential("base-id", "base-key"),
+		},
+		roleARN:    "qcs::cam::uin/123456:roleName/metering",
+		duration:   cosAssumeRoleDuration,
+		credential: common.NewTokenCredential("expired-id", "expired-key", "expired-token"),
+		expiresAt:  time.Now().Add(-time.Minute),
+	}
+
+	credential, err := provider.GetCredential(context.Background())
+	require.ErrorIs(t, err, refreshErr)
+	require.Nil(t, credential)
+}
+
+func TestTencentCloudAssumeRoleCredentialsProviderFallsBackForUnixEpochExpiration(t *testing.T) {
+	origAssumeRole := assumeTencentCloudRole
+	t.Cleanup(func() {
+		assumeTencentCloudRole = origAssumeRole
+	})
+
+	assumeTencentCloudRole = func(context.Context, common.CredentialIface, string, string, time.Duration) (*tencentCloudAssumeRoleResult, error) {
+		return &tencentCloudAssumeRoleResult{
+			tmpSecretID:  "tmp-id",
+			tmpSecretKey: "tmp-key",
+			token:        "tmp-token",
+			expiresAt:    time.Unix(0, 0),
+		}, nil
+	}
+
+	provider := &tencentCloudAssumeRoleCredentialsProvider{
+		baseProvider: &tencentCloudStaticCredentialsProvider{
+			credential: common.NewCredential("base-id", "base-key"),
+		},
+		roleARN:  "qcs::cam::uin/123456:roleName/metering",
+		duration: cosAssumeRoleDuration,
+	}
+
+	startedAt := time.Now()
+	_, err := provider.GetCredential(context.Background())
+	require.NoError(t, err)
+	require.WithinDuration(t, startedAt.Add(cosAssumeRoleDuration), provider.expiresAt, time.Second)
 }
 
 func TestTencentCloudCOSAuthorizationTransportUsesRequestContext(t *testing.T) {
