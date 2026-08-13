@@ -422,7 +422,10 @@ func TestTencentCloudCOSAuthorizationTransportUsesRequestContext(t *testing.T) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://metering-123456.cos.ap-beijing.myqcloud.com/object", nil)
 	require.NoError(t, err)
 
-	_, err = transport.RoundTrip(req)
+	resp, err := transport.RoundTrip(req)
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
 	require.ErrorIs(t, err, context.Canceled)
 	require.Equal(t, 1, provider.calls)
 	require.Equal(t, "request-context", provider.ctx.Value(contextKey{}))
